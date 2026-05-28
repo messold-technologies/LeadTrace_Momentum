@@ -1,29 +1,36 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  LogOut, Search, Upload, Megaphone,
-  X, CheckCircle, AlertCircle, ChevronDown, ChevronUp,
+  LogOut, Search, Upload, Megaphone, X,
+  CheckCircle, AlertCircle, ChevronLeft, ChevronRight,
+  Layers, FileSpreadsheet, Phone,
 } from "lucide-react";
 
 // ── types ─────────────────────────────────────────────────────────────────────
 
 type User = { id: string; email: string };
 
-type SaleRecord = { sale_date: string | null; center_name: string | null };
+type Channel = { name: string; count: number };
 
-type ChannelResult = {
-  channel: string;
-  count:   number;
-  records: SaleRecord[];
+type ChannelRecord = {
+  phone:       string;
+  sale_date:   string | null;
+  center_name: string | null;
 };
 
-type SearchResult = {
-  phone:    string;
-  found:    boolean;
-  channels: ChannelResult[];
+type ChannelPage = {
+  channel:    string;
+  total:      number;
+  page:       number;
+  totalPages: number;
+  records:    ChannelRecord[];
 };
+
+type SearchRecord = { sale_date: string | null; center_name: string | null };
+type SearchChannel = { channel: string; count: number; records: SearchRecord[] };
+type SearchResult  = { phone: string; found: boolean; channels: SearchChannel[] };
 
 type SheetReport = {
   sheet:        string;
@@ -34,7 +41,6 @@ type SheetReport = {
   skippedRows?: number;
   detectedColumns?: { phone: string | null; date: string | null; center: string | null };
 };
-
 type ImportResult = {
   summary: { totalInserted: number; totalDuplicates: number; totalSkipped: number };
   sheets:  SheetReport[];
@@ -45,85 +51,340 @@ type ImportResult = {
 function formatDate(raw: string | null): string {
   if (!raw) return "—";
   const d = new Date(raw);
-  return isNaN(d.getTime())
-    ? raw
-    : d.toLocaleDateString("en-AU", { day: "2-digit", month: "short", year: "numeric" });
+  return isNaN(d.getTime()) ? raw : d.toLocaleDateString("en-AU", { day: "2-digit", month: "short", year: "numeric" });
 }
 
-// ── sub-components ────────────────────────────────────────────────────────────
+function cls(...parts: (string | false | null | undefined)[]) {
+  return parts.filter(Boolean).join(" ");
+}
 
-function ChannelCard({ result }: { result: ChannelResult }) {
-  const [open, setOpen] = useState(false);
+// ── Import Modal ──────────────────────────────────────────────────────────────
+
+function ImportModal({
+  onClose,
+  onImported,
+}: {
+  onClose:    () => void;
+  onImported: () => void;
+}) {
+  const fileRef = useRef<HTMLInputElement>(null);
+  const [file,    setFile]    = useState<File | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [result,  setResult]  = useState<ImportResult | null>(null);
+  const [error,   setError]   = useState<string | null>(null);
+
+  async function handleImport(e: React.FormEvent) {
+    e.preventDefault();
+    if (!file) return;
+    setLoading(true);
+    setError(null);
+    try {
+      const form = new FormData();
+      form.append("file", file);
+      const res  = await fetch("/api/sales/import", { method: "POST", body: form, credentials: "include" });
+      const data = (await res.json()) as ImportResult & { error?: string };
+      if (!res.ok) { setError(data.error ?? "Import failed"); return; }
+      setResult(data);
+      onImported();
+    } catch {
+      setError("Network error");
+    } finally {
+      setLoading(false);
+    }
+  }
+
   return (
-    <div className="rounded-2xl border border-white/10 bg-white/5 overflow-hidden">
-      <button
-        className="w-full flex items-center justify-between px-4 py-3 hover:bg-white/5 transition-colors"
-        onClick={() => setOpen(v => !v)}
-      >
-        <div className="flex items-center gap-3">
-          <span className="h-2 w-2 rounded-full bg-indigo-400 shrink-0" />
-          <span className="font-medium text-white text-sm">{result.channel}</span>
-          <span className="text-xs text-white/40 bg-white/10 rounded-full px-2 py-0.5">
-            {result.count} {result.count === 1 ? "sale" : "sales"}
-          </span>
-        </div>
-        {open
-          ? <ChevronUp className="h-4 w-4 text-white/40" />
-          : <ChevronDown className="h-4 w-4 text-white/40" />}
-      </button>
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+      {/* backdrop */}
+      <div className="absolute inset-0 bg-slate-900/40 backdrop-blur-sm" onClick={onClose} />
 
-      {open && (
-        <div className="border-t border-white/10 divide-y divide-white/5">
-          {result.records.map((r, i) => (
-            <div key={i} className="flex items-center justify-between px-4 py-2.5 text-sm">
-              <span className="text-white/50">{formatDate(r.sale_date)}</span>
-              <span className="text-white/80 text-right max-w-[55%] truncate">
-                {r.center_name ?? <span className="text-white/30 italic">No center</span>}
-              </span>
+      <div className="relative w-full max-w-lg rounded-2xl bg-white shadow-2xl shadow-slate-200 border border-slate-200 overflow-hidden">
+        {/* header */}
+        <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100">
+          <div className="flex items-center gap-2.5">
+            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-indigo-50">
+              <FileSpreadsheet className="h-4 w-4 text-indigo-600" />
             </div>
-          ))}
+            <div>
+              <h2 className="text-sm font-semibold text-slate-900">Import Sales Data</h2>
+              <p className="text-xs text-slate-500">Each sheet is treated as a channel automatically</p>
+            </div>
+          </div>
+          <button
+            onClick={onClose}
+            className="rounded-lg p-1.5 text-slate-400 hover:text-slate-600 hover:bg-slate-100 transition-colors"
+          >
+            <X className="h-4 w-4" />
+          </button>
         </div>
-      )}
+
+        <div className="p-6 space-y-4">
+          {!result ? (
+            <form onSubmit={handleImport} className="space-y-4">
+              {/* drop zone */}
+              <label className={cls(
+                "flex flex-col items-center gap-3 rounded-xl border-2 border-dashed px-6 py-10 cursor-pointer transition-colors",
+                file
+                  ? "border-indigo-300 bg-indigo-50/50"
+                  : "border-slate-200 bg-slate-50 hover:border-indigo-300 hover:bg-indigo-50/40"
+              )}>
+                <div className={cls(
+                  "flex h-12 w-12 items-center justify-center rounded-xl",
+                  file ? "bg-indigo-100" : "bg-slate-100"
+                )}>
+                  <Upload className={cls("h-5 w-5", file ? "text-indigo-600" : "text-slate-400")} />
+                </div>
+                <div className="text-center">
+                  {file ? (
+                    <p className="text-sm font-medium text-indigo-700">{file.name}</p>
+                  ) : (
+                    <>
+                      <p className="text-sm font-medium text-slate-700">Click to browse or drag &amp; drop</p>
+                      <p className="mt-0.5 text-xs text-slate-400">.xlsx or .xls files only</p>
+                    </>
+                  )}
+                </div>
+                <input
+                  ref={fileRef}
+                  type="file"
+                  accept=".xlsx,.xls"
+                  className="hidden"
+                  onChange={e => { setFile(e.target.files?.[0] ?? null); setError(null); }}
+                />
+              </label>
+
+              {error && (
+                <div className="flex items-center gap-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2.5 text-sm text-red-700">
+                  <AlertCircle className="h-4 w-4 shrink-0" />
+                  {error}
+                </div>
+              )}
+
+              <button
+                type="submit"
+                disabled={loading || !file}
+                className="w-full flex items-center justify-center gap-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 disabled:opacity-40 py-2.5 text-sm font-semibold text-white transition-colors"
+              >
+                <Upload className="h-4 w-4" />
+                {loading ? "Importing…" : "Import File"}
+              </button>
+            </form>
+          ) : (
+            <div className="space-y-4">
+              {/* summary */}
+              <div className="grid grid-cols-3 gap-3">
+                <div className="rounded-xl bg-emerald-50 border border-emerald-100 p-3 text-center">
+                  <div className="text-xl font-bold text-emerald-700">{result.summary.totalInserted}</div>
+                  <div className="text-xs text-emerald-600 mt-0.5">New records</div>
+                </div>
+                <div className="rounded-xl bg-slate-50 border border-slate-200 p-3 text-center">
+                  <div className="text-xl font-bold text-slate-600">{result.summary.totalDuplicates}</div>
+                  <div className="text-xs text-slate-500 mt-0.5">Duplicates</div>
+                </div>
+                <div className="rounded-xl bg-amber-50 border border-amber-100 p-3 text-center">
+                  <div className="text-xl font-bold text-amber-700">{result.summary.totalSkipped}</div>
+                  <div className="text-xs text-amber-600 mt-0.5">No phone</div>
+                </div>
+              </div>
+
+              {/* per-sheet */}
+              <div className="rounded-xl border border-slate-200 overflow-hidden divide-y divide-slate-100">
+                {result.sheets.map(r => (
+                  <div key={r.sheet} className="flex items-center gap-3 px-4 py-2.5">
+                    {r.skipped
+                      ? <AlertCircle className="h-4 w-4 text-amber-400 shrink-0" />
+                      : <CheckCircle className="h-4 w-4 text-emerald-500 shrink-0" />}
+                    <span className="text-sm font-medium text-slate-700 min-w-[100px]">{r.sheet}</span>
+                    {r.skipped
+                      ? <span className="text-xs text-slate-400 italic">{r.reason}</span>
+                      : <>
+                          <span className="text-xs text-emerald-600">{r.inserted} new</span>
+                          {(r.duplicates ?? 0) > 0 && <span className="text-xs text-slate-400">{r.duplicates} dup</span>}
+                          {(r.skippedRows ?? 0) > 0 && <span className="text-xs text-slate-400">{r.skippedRows} skipped</span>}
+                        </>}
+                  </div>
+                ))}
+              </div>
+
+              <button
+                onClick={onClose}
+                className="w-full rounded-xl border border-slate-200 bg-slate-50 hover:bg-slate-100 py-2.5 text-sm font-medium text-slate-700 transition-colors"
+              >
+                Done
+              </button>
+            </div>
+          )}
+        </div>
+      </div>
     </div>
   );
 }
 
-function SheetRow({ r }: { r: SheetReport }) {
-  if (r.skipped) {
+// ── Channel Table ─────────────────────────────────────────────────────────────
+
+function ChannelTable({ channelName }: { channelName: string }) {
+  const [data,    setData]    = useState<ChannelPage | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [page,    setPage]    = useState(1);
+
+  const load = useCallback(async (p: number) => {
+    setLoading(true);
+    try {
+      const res = await fetch(
+        `/api/sales/channel/${encodeURIComponent(channelName)}?page=${p}&limit=50`,
+        { credentials: "include" }
+      );
+      const d = (await res.json()) as ChannelPage;
+      setData(d);
+      setPage(p);
+    } finally {
+      setLoading(false);
+    }
+  }, [channelName]);
+
+  useEffect(() => { load(1); }, [load]);
+
+  if (loading && !data) {
     return (
-      <div className="flex items-center gap-3 px-4 py-2.5 text-sm">
-        <AlertCircle className="h-4 w-4 text-amber-400 shrink-0" />
-        <span className="text-white/60 font-medium">{r.sheet}</span>
-        <span className="text-white/30 italic">{r.reason}</span>
+      <div className="flex items-center justify-center py-20">
+        <div className="h-5 w-5 rounded-full border-2 border-indigo-500 border-t-transparent animate-spin" />
       </div>
     );
   }
+
+  if (!data) return null;
+
   return (
-    <div className="flex items-center gap-3 px-4 py-2.5 text-sm flex-wrap">
-      <CheckCircle className="h-4 w-4 text-emerald-400 shrink-0" />
-      <span className="text-white/80 font-medium min-w-[110px]">{r.sheet}</span>
-      <span className="text-emerald-400">{r.inserted} new</span>
-      {(r.duplicates ?? 0) > 0 && (
-        <span className="text-white/30">{r.duplicates} dup</span>
-      )}
-      {(r.skippedRows ?? 0) > 0 && (
-        <span className="text-white/30">{r.skippedRows} no-phone</span>
-      )}
-      {r.detectedColumns?.phone && (
-        <span className="ml-auto text-[11px] text-white/20 truncate max-w-[180px]">
-          ↳ {r.detectedColumns.phone}
-        </span>
-      )}
+    <div className="space-y-4">
+      {/* table header info */}
+      <div className="flex items-center justify-between">
+        <p className="text-sm text-slate-500">
+          Showing {(page - 1) * 50 + 1}–{Math.min(page * 50, data.total)} of{" "}
+          <span className="font-medium text-slate-700">{data.total.toLocaleString()}</span> records
+        </p>
+        <div className="flex items-center gap-1.5">
+          <button
+            onClick={() => load(page - 1)}
+            disabled={page <= 1 || loading}
+            className="flex items-center gap-1 rounded-lg border border-slate-200 px-2.5 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50 disabled:opacity-40 transition-colors"
+          >
+            <ChevronLeft className="h-3.5 w-3.5" /> Prev
+          </button>
+          <span className="text-xs text-slate-500 px-1">{page} / {data.totalPages}</span>
+          <button
+            onClick={() => load(page + 1)}
+            disabled={page >= data.totalPages || loading}
+            className="flex items-center gap-1 rounded-lg border border-slate-200 px-2.5 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50 disabled:opacity-40 transition-colors"
+          >
+            Next <ChevronRight className="h-3.5 w-3.5" />
+          </button>
+        </div>
+      </div>
+
+      {/* table */}
+      <div className="rounded-xl border border-slate-200 overflow-hidden">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="bg-slate-50 border-b border-slate-200">
+              <th className="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wide">Phone</th>
+              <th className="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wide">Sale Date</th>
+              <th className="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wide">Center Name</th>
+            </tr>
+          </thead>
+          <tbody className={cls("divide-y divide-slate-100", loading ? "opacity-50" : "")}>
+            {data.records.map((r, i) => (
+              <tr key={i} className="hover:bg-slate-50 transition-colors">
+                <td className="px-4 py-3 font-mono text-slate-700 text-xs">{r.phone}</td>
+                <td className="px-4 py-3 text-slate-600">{formatDate(r.sale_date)}</td>
+                <td className="px-4 py-3 text-slate-600">{r.center_name ?? <span className="text-slate-300 italic">—</span>}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }
 
-// ── page ──────────────────────────────────────────────────────────────────────
+// ── Phone Search Results ──────────────────────────────────────────────────────
+
+function SearchResults({ result, onClose }: { result: SearchResult; onClose: () => void }) {
+  const [openChannel, setOpenChannel] = useState<string | null>(null);
+
+  if (!result.found) {
+    return (
+      <div className="rounded-xl border border-slate-200 bg-white p-10 text-center">
+        <Phone className="mx-auto h-8 w-8 text-slate-300 mb-2" />
+        <p className="text-sm text-slate-500">No sales records found for <span className="font-medium text-slate-700">{result.phone}</span></p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center justify-between">
+        <p className="text-sm text-slate-500">
+          <span className="font-medium text-slate-900">{result.phone}</span> — found in{" "}
+          <span className="font-medium text-indigo-600">{result.channels.length}</span>{" "}
+          {result.channels.length === 1 ? "channel" : "channels"}
+        </p>
+        <button onClick={onClose} className="rounded-lg p-1 text-slate-400 hover:text-slate-600 hover:bg-slate-100 transition-colors">
+          <X className="h-4 w-4" />
+        </button>
+      </div>
+
+      {result.channels.map(ch => (
+        <div key={ch.channel} className="rounded-xl border border-slate-200 bg-white overflow-hidden">
+          <button
+            className="w-full flex items-center justify-between px-4 py-3 hover:bg-slate-50 transition-colors"
+            onClick={() => setOpenChannel(openChannel === ch.channel ? null : ch.channel)}
+          >
+            <div className="flex items-center gap-3">
+              <span className="h-2 w-2 rounded-full bg-indigo-500 shrink-0" />
+              <span className="font-medium text-slate-800 text-sm">{ch.channel}</span>
+              <span className="rounded-full bg-indigo-50 text-indigo-600 text-xs font-medium px-2 py-0.5">
+                {ch.count} {ch.count === 1 ? "sale" : "sales"}
+              </span>
+            </div>
+            <ChevronRight className={cls("h-4 w-4 text-slate-400 transition-transform", openChannel === ch.channel && "rotate-90")} />
+          </button>
+
+          {openChannel === ch.channel && (
+            <div className="border-t border-slate-100">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="bg-slate-50">
+                    <th className="px-4 py-2 text-left text-xs font-semibold text-slate-500 uppercase tracking-wide">Sale Date</th>
+                    <th className="px-4 py-2 text-left text-xs font-semibold text-slate-500 uppercase tracking-wide">Center Name</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {ch.records.map((r, i) => (
+                    <tr key={i} className="hover:bg-slate-50">
+                      <td className="px-4 py-2.5 text-slate-600">{formatDate(r.sale_date)}</td>
+                      <td className="px-4 py-2.5 text-slate-600">{r.center_name ?? <span className="text-slate-300 italic">—</span>}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ── Main Page ─────────────────────────────────────────────────────────────────
 
 export default function DashboardPage() {
   const router = useRouter();
-  const [user,  setUser]  = useState<User | null>(null);
-  const [ready, setReady] = useState(false);
+  const [user,    setUser]    = useState<User | null>(null);
+  const [ready,   setReady]   = useState(false);
+
+  // sidebar
+  const [channels,         setChannels]         = useState<Channel[]>([]);
+  const [selectedChannel,  setSelectedChannel]  = useState<string | null>(null);
 
   // search
   const [phoneInput,   setPhoneInput]   = useState("");
@@ -131,14 +392,10 @@ export default function DashboardPage() {
   const [searchResult, setSearchResult] = useState<SearchResult | null>(null);
   const [searchError,  setSearchError]  = useState<string | null>(null);
 
-  // import
-  const fileRef = useRef<HTMLInputElement>(null);
-  const [selectedFile, setSelectedFile] = useState<File | null>(null);
-  const [importing,    setImporting]    = useState(false);
-  const [importResult, setImportResult] = useState<ImportResult | null>(null);
-  const [importError,  setImportError]  = useState<string | null>(null);
+  // modal
+  const [showModal, setShowModal] = useState(false);
 
-  // auth guard
+  // ── auth guard ──
   useEffect(() => {
     (async () => {
       const res = await fetch("/api/auth/me", { credentials: "include" });
@@ -149,6 +406,16 @@ export default function DashboardPage() {
       setReady(true);
     })().catch(() => router.replace("/"));
   }, [router]);
+
+  // ── load channels ──
+  const loadChannels = useCallback(async () => {
+    const res = await fetch("/api/sales/channels", { credentials: "include" });
+    if (!res.ok) return;
+    const data = (await res.json()) as { channels: Channel[] };
+    setChannels(data.channels);
+  }, []);
+
+  useEffect(() => { if (ready) loadChannels(); }, [ready, loadChannels]);
 
   async function handleLogout() {
     await fetch("/api/auth/logout", { method: "POST", credentials: "include" });
@@ -161,6 +428,7 @@ export default function DashboardPage() {
     setSearching(true);
     setSearchResult(null);
     setSearchError(null);
+    setSelectedChannel(null);
     try {
       const res  = await fetch(`/api/sales/search?phone=${encodeURIComponent(phoneInput.trim())}`, { credentials: "include" });
       const data = (await res.json()) as SearchResult & { error?: string };
@@ -173,208 +441,177 @@ export default function DashboardPage() {
     }
   }
 
-  async function handleImport(e: React.FormEvent) {
-    e.preventDefault();
-    if (!selectedFile) return;
-    setImporting(true);
-    setImportResult(null);
-    setImportError(null);
-    try {
-      const form = new FormData();
-      form.append("file", selectedFile);
-      const res  = await fetch("/api/sales/import", { method: "POST", body: form, credentials: "include" });
-      const data = (await res.json()) as ImportResult & { error?: string };
-      if (!res.ok) { setImportError(data.error ?? "Import failed"); return; }
-      setImportResult(data);
-      setSelectedFile(null);
-      if (fileRef.current) fileRef.current.value = "";
-    } catch {
-      setImportError("Network error");
-    } finally {
-      setImporting(false);
-    }
-  }
-
   if (!ready) {
     return (
-      <div className="min-h-screen bg-[#070A12] flex items-center justify-center">
-        <div className="h-5 w-5 rounded-full border-2 border-indigo-400 border-t-transparent animate-spin" />
+      <div className="h-screen bg-slate-50 flex items-center justify-center">
+        <div className="h-5 w-5 rounded-full border-2 border-indigo-500 border-t-transparent animate-spin" />
       </div>
     );
   }
 
   return (
-    <div className="relative min-h-screen bg-[#070A12]">
-      <div
-        className="pointer-events-none absolute inset-0 bg-[radial-gradient(900px_700px_at_20%_10%,rgba(99,102,241,0.35),transparent_60%),radial-gradient(800px_600px_at_85%_5%,rgba(217,70,239,0.30),transparent_60%),radial-gradient(900px_700px_at_50%_100%,rgba(59,130,246,0.18),transparent_65%)]"
-        aria-hidden="true"
-      />
-      <div
-        className="pointer-events-none absolute inset-0 opacity-[0.05] bg-[linear-gradient(to_right,rgba(255,255,255,0.14)_1px,transparent_1px),linear-gradient(to_bottom,rgba(255,255,255,0.14)_1px,transparent_1px)] bg-size-[72px_72px]"
-        aria-hidden="true"
-      />
-      <div className="pointer-events-none absolute inset-0 bg-linear-to-b from-black/0 via-black/10 to-black/35" />
+    <div className="h-screen flex flex-col bg-slate-50 overflow-hidden">
 
-      <div className="relative mx-auto max-w-4xl px-4 py-8 space-y-6">
-
-        {/* header */}
-        <div className="flex items-center justify-between rounded-2xl border border-white/10 bg-black/40 px-5 py-3.5 backdrop-blur">
-          <div className="flex items-center gap-3">
-            <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-indigo-500/20 border border-indigo-400/30">
-              <Megaphone className="h-4 w-4 text-indigo-400" />
-            </div>
-            <div>
-              <div className="text-[10px] font-semibold tracking-widest text-white/40">LEAD TRACE</div>
-              <div className="text-sm font-medium text-white/80">{user?.email}</div>
-            </div>
+      {/* ── top header ── */}
+      <header className="flex-shrink-0 flex items-center justify-between h-14 px-4 bg-white border-b border-slate-200 shadow-sm">
+        <div className="flex items-center gap-2.5">
+          <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-indigo-600">
+            <Megaphone className="h-3.5 w-3.5 text-white" />
           </div>
-          <button
-            onClick={handleLogout}
-            className="flex items-center gap-2 rounded-xl px-3 py-1.5 text-sm text-white/50 hover:text-white hover:bg-white/10 transition-colors"
-          >
-            <LogOut className="h-4 w-4" />
-            Logout
-          </button>
+          <span className="text-sm font-semibold text-slate-900 tracking-tight">LeadTrace</span>
         </div>
 
-        {/* search */}
-        <div className="rounded-3xl border border-white/10 bg-black/40 p-6 backdrop-blur space-y-5">
-          <div>
-            <h2 className="text-lg font-semibold text-white">Search by Phone Number</h2>
-            <p className="mt-0.5 text-sm text-white/40">Find all sales channels a contact number appears in</p>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => setShowModal(true)}
+            className="flex items-center gap-2 rounded-lg bg-indigo-600 hover:bg-indigo-700 px-3.5 py-2 text-xs font-semibold text-white transition-colors"
+          >
+            <Upload className="h-3.5 w-3.5" />
+            Import Excel
+          </button>
+          <div className="h-4 w-px bg-slate-200 mx-1" />
+          <span className="text-xs text-slate-500 hidden sm:block">{user?.email}</span>
+          <button
+            onClick={handleLogout}
+            className="flex items-center gap-1.5 rounded-lg px-2.5 py-2 text-xs text-slate-500 hover:text-slate-900 hover:bg-slate-100 transition-colors"
+          >
+            <LogOut className="h-3.5 w-3.5" />
+            <span className="hidden sm:block">Logout</span>
+          </button>
+        </div>
+      </header>
+
+      <div className="flex flex-1 overflow-hidden">
+
+        {/* ── sidebar ── */}
+        <aside className="w-56 flex-shrink-0 bg-white border-r border-slate-200 flex flex-col overflow-hidden">
+          <div className="flex items-center gap-2 px-4 py-3 border-b border-slate-100">
+            <Layers className="h-3.5 w-3.5 text-slate-400" />
+            <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Channels</span>
+            {channels.length > 0 && (
+              <span className="ml-auto text-xs text-slate-400">{channels.length}</span>
+            )}
           </div>
 
-          <form onSubmit={handleSearch} className="flex gap-3">
-            <input
-              value={phoneInput}
-              onChange={e => setPhoneInput(e.target.value)}
-              placeholder="e.g. 0412 345 678"
-              className="flex-1 rounded-xl border border-white/10 bg-white/5 px-4 py-2.5 text-white placeholder:text-white/25 outline-none focus:ring-2 focus:ring-indigo-500/50 focus:border-indigo-500/50 text-sm"
-              disabled={searching}
-            />
+          <nav className="flex-1 overflow-y-auto py-1">
+            {channels.length === 0 ? (
+              <div className="px-4 py-6 text-center">
+                <p className="text-xs text-slate-400">No data imported yet.</p>
+                <button
+                  onClick={() => setShowModal(true)}
+                  className="mt-2 text-xs text-indigo-600 hover:underline font-medium"
+                >
+                  Import a file
+                </button>
+              </div>
+            ) : (
+              channels.map(ch => (
+                <button
+                  key={ch.name}
+                  onClick={() => { setSelectedChannel(ch.name); setSearchResult(null); }}
+                  className={cls(
+                    "w-full flex items-center justify-between px-4 py-2.5 text-left transition-colors",
+                    selectedChannel === ch.name
+                      ? "bg-indigo-50 text-indigo-700"
+                      : "text-slate-700 hover:bg-slate-50"
+                  )}
+                >
+                  <span className="text-sm truncate font-medium">{ch.name}</span>
+                  <span className={cls(
+                    "text-xs rounded-full px-1.5 py-0.5 font-medium shrink-0",
+                    selectedChannel === ch.name
+                      ? "bg-indigo-100 text-indigo-600"
+                      : "text-slate-400 bg-slate-100"
+                  )}>
+                    {ch.count.toLocaleString()}
+                  </span>
+                </button>
+              ))
+            )}
+          </nav>
+        </aside>
+
+        {/* ── main content ── */}
+        <main className="flex-1 overflow-y-auto p-6 space-y-6">
+
+          {/* search bar */}
+          <form onSubmit={handleSearch} className="flex gap-2">
+            <div className="relative flex-1">
+              <Search className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-400" />
+              <input
+                value={phoneInput}
+                onChange={e => setPhoneInput(e.target.value)}
+                placeholder="Search by phone number, e.g. 0412 345 678"
+                className="w-full rounded-xl border border-slate-200 bg-white pl-9 pr-4 py-2.5 text-sm text-slate-900 placeholder:text-slate-400 shadow-sm outline-none focus:ring-2 focus:ring-indigo-500/30 focus:border-indigo-400 transition-colors"
+                disabled={searching}
+              />
+            </div>
             <button
               type="submit"
               disabled={searching || !phoneInput.trim()}
-              className="flex items-center gap-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 px-5 py-2.5 text-sm font-semibold text-white transition-colors"
+              className="flex items-center gap-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 px-5 py-2.5 text-sm font-semibold text-white shadow-sm transition-colors"
             >
-              <Search className="h-4 w-4" />
               {searching ? "Searching…" : "Search"}
             </button>
           </form>
 
+          {/* search error */}
           {searchError && (
-            <div className="flex items-center gap-2 rounded-xl border border-red-500/20 bg-red-500/10 px-4 py-3 text-sm text-red-300">
+            <div className="flex items-center gap-2 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
               <AlertCircle className="h-4 w-4 shrink-0" />
               {searchError}
             </div>
           )}
 
+          {/* search results */}
           {searchResult && (
-            <div className="space-y-3">
-              <div className="flex items-center justify-between">
-                <span className="text-sm text-white/50">
-                  Results for <span className="text-white font-medium">{searchResult.phone}</span>
-                </span>
-                <button onClick={() => setSearchResult(null)} className="text-white/30 hover:text-white/60 transition-colors">
-                  <X className="h-4 w-4" />
-                </button>
-              </div>
+            <SearchResults result={searchResult} onClose={() => setSearchResult(null)} />
+          )}
 
-              {!searchResult.found ? (
-                <div className="rounded-2xl border border-white/10 bg-white/5 px-4 py-10 text-center text-sm text-white/40">
-                  No sales records found for this number.
-                </div>
-              ) : (
-                <div className="space-y-2">
-                  <div className="text-xs text-white/30 uppercase tracking-wider">
-                    Found in {searchResult.channels.length}{" "}
-                    {searchResult.channels.length === 1 ? "channel" : "channels"}
-                  </div>
-                  {searchResult.channels.map(ch => (
-                    <ChannelCard key={ch.channel} result={ch} />
-                  ))}
-                </div>
+          {/* channel table */}
+          {selectedChannel && !searchResult && (
+            <div className="space-y-3">
+              <div className="flex items-center gap-3">
+                <h2 className="text-base font-semibold text-slate-900">{selectedChannel}</h2>
+                <span className="text-xs text-slate-400 bg-slate-100 rounded-full px-2 py-0.5">
+                  {channels.find(c => c.name === selectedChannel)?.count.toLocaleString()} records
+                </span>
+              </div>
+              <ChannelTable channelName={selectedChannel} />
+            </div>
+          )}
+
+          {/* empty state */}
+          {!selectedChannel && !searchResult && !searchError && (
+            <div className="flex flex-col items-center justify-center py-20 text-center">
+              <div className="h-16 w-16 rounded-2xl bg-indigo-50 flex items-center justify-center mb-4">
+                <Layers className="h-7 w-7 text-indigo-400" />
+              </div>
+              <h3 className="text-base font-semibold text-slate-700">Select a channel or search</h3>
+              <p className="mt-1 text-sm text-slate-400 max-w-xs">
+                Pick a channel from the sidebar to browse its records, or search by phone number above.
+              </p>
+              {channels.length === 0 && (
+                <button
+                  onClick={() => setShowModal(true)}
+                  className="mt-4 flex items-center gap-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 px-4 py-2.5 text-sm font-semibold text-white transition-colors"
+                >
+                  <Upload className="h-4 w-4" />
+                  Import your first Excel file
+                </button>
               )}
             </div>
           )}
-        </div>
-
-        {/* import */}
-        <div className="rounded-3xl border border-white/10 bg-black/40 p-6 backdrop-blur space-y-5">
-          <div>
-            <h2 className="text-lg font-semibold text-white">Import Sales Data</h2>
-            <p className="mt-0.5 text-sm text-white/40">
-              Upload any Excel file — each sheet is treated as a sales channel automatically
-            </p>
-          </div>
-
-          <form onSubmit={handleImport} className="space-y-4">
-            <label className="flex flex-col items-center justify-center gap-2 rounded-2xl border-2 border-dashed border-white/15 bg-white/5 px-6 py-10 cursor-pointer hover:border-indigo-500/40 hover:bg-indigo-500/5 transition-colors">
-              <Upload className="h-6 w-6 text-white/30" />
-              <div className="text-sm text-white/50 text-center">
-                {selectedFile ? (
-                  <span className="text-indigo-300 font-medium">{selectedFile.name}</span>
-                ) : (
-                  <><span className="text-white/70 font-medium">Click to browse</span> or drag &amp; drop</>
-                )}
-              </div>
-              <div className="text-xs text-white/25">.xlsx or .xls only</div>
-              <input
-                ref={fileRef}
-                type="file"
-                accept=".xlsx,.xls"
-                className="hidden"
-                onChange={e => {
-                  setSelectedFile(e.target.files?.[0] ?? null);
-                  setImportResult(null);
-                  setImportError(null);
-                }}
-              />
-            </label>
-
-            <button
-              type="submit"
-              disabled={importing || !selectedFile}
-              className="w-full flex items-center justify-center gap-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 py-2.5 text-sm font-semibold text-white transition-colors"
-            >
-              <Upload className="h-4 w-4" />
-              {importing ? "Importing…" : "Import File"}
-            </button>
-          </form>
-
-          {importError && (
-            <div className="flex items-center gap-2 rounded-xl border border-red-500/20 bg-red-500/10 px-4 py-3 text-sm text-red-300">
-              <AlertCircle className="h-4 w-4 shrink-0" />
-              {importError}
-            </div>
-          )}
-
-          {importResult && (
-            <div className="space-y-3">
-              <div className="flex flex-wrap gap-2">
-                <span className="rounded-full bg-emerald-500/15 border border-emerald-500/25 px-3 py-1 text-xs font-medium text-emerald-300">
-                  {importResult.summary.totalInserted} new records
-                </span>
-                {importResult.summary.totalDuplicates > 0 && (
-                  <span className="rounded-full bg-white/10 border border-white/10 px-3 py-1 text-xs text-white/40">
-                    {importResult.summary.totalDuplicates} duplicates skipped
-                  </span>
-                )}
-                {importResult.summary.totalSkipped > 0 && (
-                  <span className="rounded-full bg-amber-500/15 border border-amber-500/25 px-3 py-1 text-xs text-amber-300">
-                    {importResult.summary.totalSkipped} rows without phone
-                  </span>
-                )}
-              </div>
-
-              <div className="rounded-2xl border border-white/10 bg-white/5 divide-y divide-white/5 overflow-hidden">
-                {importResult.sheets.map(r => <SheetRow key={r.sheet} r={r} />)}
-              </div>
-            </div>
-          )}
-        </div>
-
+        </main>
       </div>
+
+      {/* ── import modal ── */}
+      {showModal && (
+        <ImportModal
+          onClose={() => setShowModal(false)}
+          onImported={() => loadChannels()}
+        />
+      )}
     </div>
   );
 }
