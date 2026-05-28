@@ -70,7 +70,7 @@ export function AuthCard() {
   }
 
   return (
-    <div className="w-full max-w-md rounded-3xl bg-white p-8 shadow-2xl border border-white/10 backdrop-blur">
+    <div className="w-full max-w-md rounded-3xl bg-white p-8 shadow-xl shadow-slate-200/80 border border-slate-200">
       <div className="flex items-center gap-4">
         <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-black">
           <Megaphone className="h-5 w-5 text-white" />
@@ -97,7 +97,7 @@ export function AuthCard() {
           </label>
           <input
             id="auth-email"
-            className="mt-1 w-full rounded-xl border border-white/10 bg-black/40 px-4 py-3 text-white placeholder:text-white/35 outline-none focus:ring-2 focus:ring-white/10 focus:border-white/25"
+            className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-slate-900 placeholder:text-slate-400 outline-none focus:ring-2 focus:ring-indigo-500/30 focus:border-indigo-400 transition-colors"
             value={email}
             onChange={(e) => setEmail(e.target.value)}
             placeholder="you@example.com"
@@ -118,7 +118,7 @@ export function AuthCard() {
           <div className="flex items-center justify-between relative">
             <input
               id="auth-password"
-              className="mt-1 w-full rounded-xl border border-white/10 bg-black/40 px-4 py-3 pr-12 text-white placeholder:text-white/35 outline-none focus:ring-2 focus:ring-white/10 focus:border-white/25"
+              className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-4 py-3 pr-12 text-slate-900 placeholder:text-slate-400 outline-none focus:ring-2 focus:ring-indigo-500/30 focus:border-indigo-400 transition-colors"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               placeholder="Min 8 chars"
@@ -141,13 +141,13 @@ export function AuthCard() {
         </div>
 
         {message && (
-          <div className="rounded-xl border border-black/10 bg-white/35 p-3 text-sm text-black/80">
+          <div className="rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">
             {message}
           </div>
         )}
 
         <button
-          className="w-full rounded-xl bg-black text-white py-3 font-semibold shadow-sm hover:bg-black/90 disabled:opacity-60"
+          className="w-full rounded-xl bg-indigo-600 text-white py-3 font-semibold shadow-sm hover:bg-indigo-700 disabled:opacity-60 transition-colors"
           disabled={loading}
           type="submit"
         >
