@@ -1,5 +1,6 @@
-import { normalizePhone } from "@/lib/salesImporter";
-import { getDb } from "@/lib/mongodb";
+import { normalizePhone, searchByPhone } from "@/lib/salesImporter";
+
+export const runtime = "nodejs";
 
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
@@ -14,37 +15,6 @@ export async function GET(request: Request) {
     return Response.json({ error: "Invalid phone number format." }, { status: 400 });
   }
 
-  const db  = await getDb();
-  const col = db.collection("sales");
-
-  const results = await col.aggregate([
-    { $match: { phone } },
-    {
-      $group: {
-        _id:     "$channel",
-        count:   { $sum: 1 },
-        records: {
-          $push: {
-            sale_date:   "$sale_date",
-            center_name: "$center_name",
-          },
-        },
-      },
-    },
-    {
-      $project: {
-        _id:     0,
-        channel: "$_id",
-        count:   1,
-        records: 1,
-      },
-    },
-    { $sort: { channel: 1 } },
-  ]).toArray();
-
-  return Response.json({
-    phone,
-    found:    results.length > 0,
-    channels: results,
-  });
+  const channels = await searchByPhone(phone);
+  return Response.json({ phone, found: channels.length > 0, channels });
 }
