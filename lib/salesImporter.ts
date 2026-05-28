@@ -62,8 +62,22 @@ function looksLikeDate(val: unknown): boolean  { return parseDate(val) !== null;
 function looksLikeNmi(val: unknown): boolean {
   if (val == null) return false;
   const s = String(val).trim();
-  // NMI/MIRN: 6–15 chars, alphanumeric, not a phone number or date
-  return s.length >= 6 && s.length <= 15 && /^[A-Z0-9]+$/i.test(s) && !looksLikePhone(val) && !looksLikeDate(val);
+ 
+  if (s.length < 6 || s.length > 15) return false;
+  if (looksLikeDate(val)) return false;
+
+
+  if (/^\d+$/.test(s)) {
+    if (s.length === 9) return false; // likely phone without leading 0
+    if (s.length === 10 && s.startsWith("0")) return false; // likely phone
+    return true;
+  }
+
+
+  if (!/^[A-Z0-9]+$/i.test(s)) return false;
+  if (!/[A-Z]/i.test(s)) return false;
+  if (!/\d/.test(s)) return false;
+  return true;
 }
 
 function findHeaderRow(rows: unknown[][]): number {
@@ -198,10 +212,10 @@ export async function importExcelBuffer(buffer: ArrayBuffer): Promise<SheetRepor
 export interface ChannelResult {
   channel:  string;
   count:    number;
-  records:  { nmi: string | null; sale_date: Date | null; center_name: string | null }[];
+  records:  { phone: string; nmi: string | null; sale_date: Date | null; center_name: string | null }[];
 }
 
-const RECORD_PUSH = { nmi: "$nmi", sale_date: "$sale_date", center_name: "$center_name" };
+const RECORD_PUSH = { phone: "$phone", nmi: "$nmi", sale_date: "$sale_date", center_name: "$center_name" };
 
 export async function searchByPhone(phone: string): Promise<ChannelResult[]> {
   await connectDb();
