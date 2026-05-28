@@ -18,7 +18,7 @@ export async function GET(
   await connectDb();
 
   const [records, total] = await Promise.all([
-    Sale.find({ channel }, { _id: 0, phone: 1, sale_date: 1, center_name: 1 })
+    Sale.find({ channel }, { _id: 0, phone: 1, nmi: 1, sale_date: 1, center_name: 1 })
         .sort({ sale_date: -1 })
         .skip(skip)
         .limit(limit)

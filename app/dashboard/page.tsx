@@ -16,6 +16,7 @@ type Channel = { name: string; count: number };
 
 type ChannelRecord = {
   phone:       string;
+  nmi:         string | null;
   sale_date:   string | null;
   center_name: string | null;
 };
@@ -28,9 +29,9 @@ type ChannelPage = {
   records:    ChannelRecord[];
 };
 
-type SearchRecord = { sale_date: string | null; center_name: string | null };
+type SearchRecord  = { nmi: string | null; sale_date: string | null; center_name: string | null };
 type SearchChannel = { channel: string; count: number; records: SearchRecord[] };
-type SearchResult  = { phone: string; found: boolean; channels: SearchChannel[] };
+type SearchResult  = { type: "phone" | "nmi"; query: string; found: boolean; channels: SearchChannel[] };
 
 type SheetReport = {
   sheet:        string;
@@ -39,7 +40,7 @@ type SheetReport = {
   inserted?:    number;
   duplicates?:  number;
   skippedRows?: number;
-  detectedColumns?: { phone: string | null; date: string | null; center: string | null };
+  detectedColumns?: { phone: string | null; nmi: string | null; date: string | null; center: string | null };
 };
 type ImportResult = {
   summary: { totalInserted: number; totalDuplicates: number; totalSkipped: number };
@@ -287,6 +288,7 @@ function ChannelTable({ channelName }: { channelName: string }) {
           <thead>
             <tr className="bg-slate-50 border-b border-slate-200">
               <th className="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wide">Phone</th>
+              <th className="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wide">NMI / MIRN</th>
               <th className="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wide">Sale Date</th>
               <th className="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wide">Center Name</th>
             </tr>
@@ -295,6 +297,7 @@ function ChannelTable({ channelName }: { channelName: string }) {
             {data.records.map((r, i) => (
               <tr key={i} className="hover:bg-slate-50 transition-colors">
                 <td className="px-4 py-3 font-mono text-slate-700 text-xs">{r.phone}</td>
+                <td className="px-4 py-3 font-mono text-slate-600 text-xs">{r.nmi ?? <span className="text-slate-300">—</span>}</td>
                 <td className="px-4 py-3 text-slate-600">{formatDate(r.sale_date)}</td>
                 <td className="px-4 py-3 text-slate-600">{r.center_name ?? <span className="text-slate-300 italic">—</span>}</td>
               </tr>
@@ -315,16 +318,20 @@ function SearchResults({ result, onClose }: { result: SearchResult; onClose: () 
     return (
       <div className="rounded-xl border border-slate-200 bg-white p-10 text-center">
         <Phone className="mx-auto h-8 w-8 text-slate-300 mb-2" />
-        <p className="text-sm text-slate-500">No sales records found for <span className="font-medium text-slate-700">{result.phone}</span></p>
+        <p className="text-sm text-slate-500">No sales records found for <span className="font-mono font-medium text-slate-700">{result.query}</span></p>
       </div>
     );
   }
+
+  const label = result.type === "nmi" ? "NMI / MIRN" : "Phone";
 
   return (
     <div className="space-y-3">
       <div className="flex items-center justify-between">
         <p className="text-sm text-slate-500">
-          <span className="font-medium text-slate-900">{result.phone}</span> — found in{" "}
+          <span className="text-xs font-semibold uppercase tracking-wide text-slate-400 mr-1">{label}</span>
+          <span className="font-mono font-medium text-slate-900">{result.query}</span>
+          {" — found in "}
           <span className="font-medium text-indigo-600">{result.channels.length}</span>{" "}
           {result.channels.length === 1 ? "channel" : "channels"}
         </p>
@@ -354,6 +361,12 @@ function SearchResults({ result, onClose }: { result: SearchResult; onClose: () 
               <table className="w-full text-sm">
                 <thead>
                   <tr className="bg-slate-50">
+                    {result.type === "phone" && (
+                      <th className="px-4 py-2 text-left text-xs font-semibold text-slate-500 uppercase tracking-wide">NMI / MIRN</th>
+                    )}
+                    {result.type === "nmi" && (
+                      <th className="px-4 py-2 text-left text-xs font-semibold text-slate-500 uppercase tracking-wide">Phone</th>
+                    )}
                     <th className="px-4 py-2 text-left text-xs font-semibold text-slate-500 uppercase tracking-wide">Sale Date</th>
                     <th className="px-4 py-2 text-left text-xs font-semibold text-slate-500 uppercase tracking-wide">Center Name</th>
                   </tr>
@@ -361,6 +374,12 @@ function SearchResults({ result, onClose }: { result: SearchResult; onClose: () 
                 <tbody className="divide-y divide-slate-100">
                   {ch.records.map((r, i) => (
                     <tr key={i} className="hover:bg-slate-50">
+                      {result.type === "phone" && (
+                        <td className="px-4 py-2.5 font-mono text-xs text-slate-600">{r.nmi ?? <span className="text-slate-300">—</span>}</td>
+                      )}
+                      {result.type === "nmi" && (
+                        <td className="px-4 py-2.5 font-mono text-xs text-slate-600">{r.nmi ?? <span className="text-slate-300">—</span>}</td>
+                      )}
                       <td className="px-4 py-2.5 text-slate-600">{formatDate(r.sale_date)}</td>
                       <td className="px-4 py-2.5 text-slate-600">{r.center_name ?? <span className="text-slate-300 italic">—</span>}</td>
                     </tr>
@@ -387,7 +406,8 @@ export default function DashboardPage() {
   const [selectedChannel,  setSelectedChannel]  = useState<string | null>(null);
 
   // search
-  const [phoneInput,   setPhoneInput]   = useState("");
+  const [searchMode,   setSearchMode]   = useState<"phone" | "nmi">("phone");
+  const [searchInput,  setSearchInput]  = useState("");
   const [searching,    setSearching]    = useState(false);
   const [searchResult, setSearchResult] = useState<SearchResult | null>(null);
   const [searchError,  setSearchError]  = useState<string | null>(null);
@@ -424,14 +444,15 @@ export default function DashboardPage() {
 
   async function handleSearch(e: React.FormEvent) {
     e.preventDefault();
-    if (!phoneInput.trim()) return;
+    if (!searchInput.trim()) return;
     setSearching(true);
     setSearchResult(null);
     setSearchError(null);
     setSelectedChannel(null);
     try {
-      const res  = await fetch(`/api/sales/search?phone=${encodeURIComponent(phoneInput.trim())}`, { credentials: "include" });
-      const data = (await res.json()) as SearchResult & { error?: string };
+      const param = searchMode === "phone" ? "phone" : "nmi";
+      const res   = await fetch(`/api/sales/search?${param}=${encodeURIComponent(searchInput.trim())}`, { credentials: "include" });
+      const data  = (await res.json()) as SearchResult & { error?: string };
       if (!res.ok) { setSearchError(data.error ?? "Search failed"); return; }
       setSearchResult(data);
     } catch {
@@ -535,21 +556,40 @@ export default function DashboardPage() {
         <main className="flex-1 overflow-y-auto p-6 space-y-6">
 
           {/* search bar */}
-          <form onSubmit={handleSearch} className="flex gap-2">
+          <form onSubmit={handleSearch} className="flex gap-2 items-center">
+            {/* mode toggle */}
+            <div className="flex rounded-xl border border-slate-200 bg-white shadow-sm overflow-hidden shrink-0">
+              {(["phone", "nmi"] as const).map(mode => (
+                <button
+                  key={mode}
+                  type="button"
+                  onClick={() => { setSearchMode(mode); setSearchInput(""); setSearchResult(null); setSearchError(null); }}
+                  className={cls(
+                    "px-3.5 py-2.5 text-xs font-semibold transition-colors",
+                    searchMode === mode
+                      ? "bg-indigo-600 text-white"
+                      : "text-slate-500 hover:text-slate-800 hover:bg-slate-50"
+                  )}
+                >
+                  {mode === "phone" ? "Phone" : "NMI / MIRN"}
+                </button>
+              ))}
+            </div>
+
             <div className="relative flex-1">
               <Search className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-400" />
               <input
-                value={phoneInput}
-                onChange={e => setPhoneInput(e.target.value)}
-                placeholder="Search by phone number, e.g. 0412 345 678"
+                value={searchInput}
+                onChange={e => setSearchInput(e.target.value)}
+                placeholder={searchMode === "phone" ? "e.g. 0412 345 678" : "e.g. 4102636546"}
                 className="w-full rounded-xl border border-slate-200 bg-white pl-9 pr-4 py-2.5 text-sm text-slate-900 placeholder:text-slate-400 shadow-sm outline-none focus:ring-2 focus:ring-indigo-500/30 focus:border-indigo-400 transition-colors"
                 disabled={searching}
               />
             </div>
             <button
               type="submit"
-              disabled={searching || !phoneInput.trim()}
-              className="flex items-center gap-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 px-5 py-2.5 text-sm font-semibold text-white shadow-sm transition-colors"
+              disabled={searching || !searchInput.trim()}
+              className="flex items-center gap-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 px-5 py-2.5 text-sm font-semibold text-white shadow-sm transition-colors shrink-0"
             >
               {searching ? "Searching…" : "Search"}
             </button>
