@@ -1,0 +1,195 @@
+import * as XLSX from "xlsx";
+import { connectDb } from "./db";
+import { Sale } from "@/models/Sale";
+
+// ── tunables ──────────────────────────────────────────────────────────────────
+const NON_SALES_SHEETS = new Set(["DNC List", "Sheet1"]);
+
+const MIN_PHONE_SCORE  = 5;
+const MIN_DATE_SCORE   = 5;
+const MIN_CENTER_SCORE = 8;
+
+const PHONE_KEYWORDS  = ["mobile", "phone", "contact", " no", "number", "ph ", "mob"];
+const DATE_KEYWORDS   = ["date", "agreement", "doa", "sold"];
+const CENTER_KEYWORDS = ["center", "centre", "branch", "hub", "location"];
+// ─────────────────────────────────────────────────────────────────────────────
+
+const PHONE_RE = /^\d{9,10}$/;
+
+export function normalizePhone(val: unknown): string | null {
+  if (val == null) return null;
+  const s = String(val).replace(/[\s\-\(\)\+]/g, "");
+  if (!PHONE_RE.test(s)) return null;
+  return s.length === 10 ? s : "0" + s;
+}
+
+function parseDate(val: unknown): Date | null {
+  if (val instanceof Date && !isNaN(val.getTime())) return val;
+  if (typeof val === "number") {
+    const d = XLSX.SSF.parse_date_code(val);
+    if (d) return new Date(d.y, d.m - 1, d.d);
+  }
+  if (typeof val === "string") {
+    const patterns: [RegExp, (a: string, b: string, c: string) => Date][] = [
+      [/^(\d{2})\/(\d{2})\/(\d{4})$/, (d, m, y) => new Date(+y, +m - 1, +d)],
+      [/^(\d{2})-(\d{2})-(\d{4})$/,  (d, m, y) => new Date(+y, +m - 1, +d)],
+      [/^(\d{2})\.(\d{2})\.(\d{4})$/, (d, m, y) => new Date(+y, +m - 1, +d)],
+      [/^(\d{4})-(\d{2})-(\d{2})$/,  (y, m, d) => new Date(+y, +m - 1, +d)],
+    ];
+    for (const [re, build] of patterns) {
+      const m = val.trim().match(re);
+      if (m) {
+        const date = build(m[1], m[2], m[3]);
+        if (!isNaN(date.getTime())) return date;
+      }
+    }
+  }
+  return null;
+}
+
+function looksLikePhone(val: unknown): boolean { return normalizePhone(val) !== null; }
+function looksLikeDate(val: unknown): boolean  { return parseDate(val) !== null; }
+
+function findHeaderRow(rows: unknown[][]): number {
+  let bestRow = 0, bestScore = 0;
+  for (let i = 0; i < Math.min(10, rows.length); i++) {
+    const score = rows[i].filter(v => typeof v === "string" && v.trim().length > 1).length;
+    if (score > bestScore) { bestScore = score; bestRow = i; }
+  }
+  return bestRow;
+}
+
+interface ColMap { phone: number | null; date: number | null; center: number | null }
+
+function detectColumns(headers: string[], sampleRows: unknown[][]): ColMap {
+  let phoneBest  = { idx: null as number | null, score: 0 };
+  let dateBest   = { idx: null as number | null, score: 0 };
+  let centerBest = { idx: null as number | null, score: 0 };
+
+  for (let idx = 0; idx < headers.length; idx++) {
+    const h    = (headers[idx] || "").toLowerCase().trim();
+    const vals = sampleRows.map(r => r[idx]).filter(v => v != null).slice(0, 15);
+
+    const ph = PHONE_KEYWORDS.filter(kw => h.includes(kw)).length * 3 + vals.filter(looksLikePhone).length;
+    const dt = DATE_KEYWORDS.filter(kw => h.includes(kw)).length  * 3 + vals.filter(looksLikeDate).length;
+    const ct = CENTER_KEYWORDS.filter(kw => h.includes(kw)).length * 4
+      + vals.filter(v => typeof v === "string" && v.length > 2 && v.length < 80 && !looksLikeDate(v) && !looksLikePhone(v)).length;
+
+    if (ph > phoneBest.score)  phoneBest  = { idx, score: ph };
+    if (dt > dateBest.score)   dateBest   = { idx, score: dt };
+    if (ct > centerBest.score) centerBest = { idx, score: ct };
+  }
+
+  return {
+    phone:  phoneBest.score  >= MIN_PHONE_SCORE  ? phoneBest.idx  : null,
+    date:   dateBest.score   >= MIN_DATE_SCORE   ? dateBest.idx   : null,
+    center: centerBest.score >= MIN_CENTER_SCORE ? centerBest.idx : null,
+  };
+}
+
+export interface SheetReport {
+  sheet:       string;
+  skipped?:    boolean;
+  reason?:     string;
+  inserted?:   number;
+  duplicates?: number;
+  skippedRows?: number;
+  detectedColumns?: { phone: string | null; date: string | null; center: string | null };
+}
+
+export async function importExcelBuffer(buffer: ArrayBuffer): Promise<SheetReport[]> {
+  await connectDb();
+
+  const wb = XLSX.read(buffer, { type: "array", cellDates: true });
+  const report: SheetReport[] = [];
+
+  for (const sheetName of wb.SheetNames) {
+    if (NON_SALES_SHEETS.has(sheetName)) continue;
+
+    const ws = wb.Sheets[sheetName];
+
+    // raw: false → formatted strings (useful for text dates)
+    const rowsFmt: unknown[][] = XLSX.utils.sheet_to_json(ws, { header: 1, defval: null, raw: false });
+    // raw: true  → Date objects + numbers (useful for excel serial dates)
+    const rowsRaw: unknown[][] = XLSX.utils.sheet_to_json(ws, { header: 1, defval: null, raw: true });
+
+    if (rowsRaw.length < 2) continue;
+
+    const headerIdx = findHeaderRow(rowsRaw);
+    const headers   = (rowsRaw[headerIdx] as unknown[]).map(v =>
+      typeof v === "string" ? v.trim() : String(v ?? "")
+    );
+    const dataRaw = rowsRaw.slice(headerIdx + 1);
+    const dataFmt = rowsFmt.slice(headerIdx + 1);
+    const cols    = detectColumns(headers, dataRaw.slice(0, 20));
+
+    if (cols.phone === null) {
+      report.push({ sheet: sheetName, skipped: true, reason: "no phone column detected" });
+      continue;
+    }
+
+    const ops: object[] = [];
+    let skippedRows = 0;
+
+    for (let i = 0; i < dataRaw.length; i++) {
+      const raw = dataRaw[i];
+      const fmt = dataFmt[i];
+
+      const phone = normalizePhone(raw[cols.phone!]);
+      if (!phone) { skippedRows++; continue; }
+
+      const saleDate = parseDate(raw[cols.date ?? -1]) ?? parseDate(fmt[cols.date ?? -1]) ?? null;
+      const rawCenter = cols.center !== null ? raw[cols.center] : null;
+      const centerName = typeof rawCenter === "string" ? rawCenter.trim() || null : null;
+
+      ops.push({
+        updateOne: {
+          filter: { phone, channel: sheetName, sale_date: saleDate },
+          update: { $setOnInsert: { phone, channel: sheetName, sale_date: saleDate, center_name: centerName, imported_at: new Date() } },
+          upsert: true,
+        },
+      });
+    }
+
+    if (ops.length > 0) {
+      const result = await Sale.bulkWrite(ops as Parameters<typeof Sale.bulkWrite>[0], { ordered: false });
+      report.push({
+        sheet:       sheetName,
+        inserted:    result.upsertedCount,
+        duplicates:  result.matchedCount,
+        skippedRows,
+        detectedColumns: {
+          phone:  headers[cols.phone!] ?? null,
+          date:   cols.date   !== null ? (headers[cols.date]   ?? null) : null,
+          center: cols.center !== null ? (headers[cols.center] ?? null) : null,
+        },
+      });
+    } else {
+      report.push({ sheet: sheetName, inserted: 0, duplicates: 0, skippedRows });
+    }
+  }
+
+  return report;
+}
+
+export interface ChannelResult {
+  channel:  string;
+  count:    number;
+  records:  { sale_date: Date | null; center_name: string | null }[];
+}
+
+export async function searchByPhone(phone: string): Promise<ChannelResult[]> {
+  await connectDb();
+  const normalized = normalizePhone(phone) ?? phone;
+
+  return Sale.aggregate<ChannelResult>([
+    { $match: { phone: normalized } },
+    { $group: {
+        _id:     "$channel",
+        count:   { $sum: 1 },
+        records: { $push: { sale_date: "$sale_date", center_name: "$center_name" } },
+    }},
+    { $project: { _id: 0, channel: "$_id", count: 1, records: 1 } },
+    { $sort: { channel: 1 } },
+  ]);
+}
