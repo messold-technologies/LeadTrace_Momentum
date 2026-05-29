@@ -3,7 +3,7 @@ import { connectDb } from "./db";
 import { Sale } from "@/models/Sale";
 
 // ── tunables ──────────────────────────────────────────────────────────────────
-const NON_SALES_SHEETS = new Set(["DNC List", "Sheet1"]);
+const NON_SALES_SHEETS = new Set([ "Sheet1"]);
 
 const MIN_PHONE_SCORE  = 5;
 const MIN_DATE_SCORE   = 5;
