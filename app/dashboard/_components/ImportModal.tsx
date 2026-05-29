@@ -10,6 +10,10 @@ import {
 } from "lucide-react";
 import type { ImportResult } from "./types";
 import { cls } from "./utils";
+import {
+  importExcelFileChunked,
+  type ImportProgress,
+} from "@/lib/importExcelClient";
 
 type Props = Readonly<{
   onClose: () => void;
@@ -20,6 +24,7 @@ export function ImportModal({ onClose, onImported }: Props) {
   const fileRef = useRef<HTMLInputElement>(null);
   const [file, setFile] = useState<File | null>(null);
   const [loading, setLoading] = useState(false);
+  const [progress, setProgress] = useState<ImportProgress | null>(null);
   const [result, setResult] = useState<ImportResult | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -28,25 +33,16 @@ export function ImportModal({ onClose, onImported }: Props) {
     if (!file) return;
     setLoading(true);
     setError(null);
+    setProgress(null);
     try {
-      const form = new FormData();
-      form.append("file", file);
-      const res = await fetch("/api/sales/import", {
-        method: "POST",
-        body: form,
-        credentials: "include",
-      });
-      const data = (await res.json()) as ImportResult & { error?: string };
-      if (!res.ok) {
-        setError(data.error ?? "Import failed");
-        return;
-      }
+      const data = await importExcelFileChunked(file, (p) => setProgress(p));
       setResult(data);
       onImported();
-    } catch {
-      setError("Network error");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Import failed");
     } finally {
       setLoading(false);
+      setProgress(null);
     }
   }
 
@@ -70,7 +66,7 @@ export function ImportModal({ onClose, onImported }: Props) {
                 Import Sales Data
               </h2>
               <p className="text-xs text-slate-500">
-                Each sheet is treated as a channel automatically
+                Large files import in batches to avoid timeouts
               </p>
             </div>
           </div>
@@ -139,6 +135,16 @@ export function ImportModal({ onClose, onImported }: Props) {
                 <div className="flex items-center gap-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2.5 text-sm text-red-700">
                   <AlertCircle className="h-4 w-4 shrink-0" />
                   {error}
+                </div>
+              )}
+
+              {loading && progress && (
+                <div className="rounded-lg border border-indigo-100 bg-indigo-50 px-3 py-2.5 text-sm text-indigo-800">
+                  <p className="font-medium">{progress.sheet}</p>
+                  <p className="text-xs text-indigo-600 mt-0.5">
+                    Batch {progress.chunk} of {progress.totalChunks} · sheet{" "}
+                    {progress.sheetsDone + 1} of {progress.totalSheets}
+                  </p>
                 </div>
               )}
 

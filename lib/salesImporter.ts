@@ -1,137 +1,104 @@
 import * as XLSX from "xlsx";
 import { connectDb } from "./db";
+import {
+  DNC_SHEET_NAME,
+  NON_SALES_SHEETS,
+  detectColumns,
+  findBestPhoneColumn,
+  findHeaderRow,
+  normalizeNmi,
+  normalizePhone,
+  parseDate,
+  sheetToRowMatrices,
+} from "./excelParse";
+import { Dnc } from "@/models/Dnc";
 import { Sale } from "@/models/Sale";
 
-// ── tunables ──────────────────────────────────────────────────────────────────
-const NON_SALES_SHEETS = new Set([ "Sheet1"]);
+export { DNC_SHEET_NAME, normalizeNmi, normalizePhone } from "./excelParse";
 
-const MIN_PHONE_SCORE  = 5;
-const MIN_DATE_SCORE   = 5;
-const MIN_CENTER_SCORE = 8;
-const MIN_NMI_SCORE    = 6;
-
-const PHONE_KEYWORDS  = ["mobile", "phone", "contact", " no", "number", "ph ", "mob"];
-const DATE_KEYWORDS   = ["date", "agreement", "doa", "sold"];
-const CENTER_KEYWORDS = ["center", "centre", "branch", "hub", "location"];
-const NMI_KEYWORDS    = ["nmi", "mirn", "site_identifier", "site identifier", "electricity"];
-// ─────────────────────────────────────────────────────────────────────────────
-
-const PHONE_RE = /^\d{9,10}$/;
-
-export function normalizePhone(val: unknown): string | null {
-  if (val == null) return null;
-  const s = String(val).replace(/[\s\-\(\)\+]/g, "");
-  if (!PHONE_RE.test(s)) return null;
-  return s.length === 10 ? s : "0" + s;
-}
-
-function parseDate(val: unknown): Date | null {
-  if (val instanceof Date && !isNaN(val.getTime())) return val;
-  if (typeof val === "number") {
-    const d = XLSX.SSF.parse_date_code(val);
-    if (d) return new Date(d.y, d.m - 1, d.d);
-  }
-  if (typeof val === "string") {
-    const patterns: [RegExp, (a: string, b: string, c: string) => Date][] = [
-      [/^(\d{2})\/(\d{2})\/(\d{4})$/, (d, m, y) => new Date(+y, +m - 1, +d)],
-      [/^(\d{2})-(\d{2})-(\d{4})$/,  (d, m, y) => new Date(+y, +m - 1, +d)],
-      [/^(\d{2})\.(\d{2})\.(\d{4})$/, (d, m, y) => new Date(+y, +m - 1, +d)],
-      [/^(\d{4})-(\d{2})-(\d{2})$/,  (y, m, d) => new Date(+y, +m - 1, +d)],
-    ];
-    for (const [re, build] of patterns) {
-      const m = val.trim().match(re);
-      if (m) {
-        const date = build(m[1], m[2], m[3]);
-        if (!isNaN(date.getTime())) return date;
-      }
-    }
-  }
-  return null;
-}
-
-export function normalizeNmi(val: unknown): string | null {
-  if (val == null) return null;
-  const s = String(val).trim();
-  // Must be at least 6 chars and not look like a date
-  if (s.length < 6 || looksLikeDate(s)) return null;
-  return s;
-}
-
-function looksLikePhone(val: unknown): boolean { return normalizePhone(val) !== null; }
-function looksLikeDate(val: unknown): boolean  { return parseDate(val) !== null; }
-function looksLikeNmi(val: unknown): boolean {
-  if (val == null) return false;
-  const s = String(val).trim();
- 
-  if (s.length < 6 || s.length > 15) return false;
-  if (looksLikeDate(val)) return false;
-
-
-  if (/^\d+$/.test(s)) {
-    if (s.length === 9) return false; // likely phone without leading 0
-    if (s.length === 10 && s.startsWith("0")) return false; // likely phone
-    return true;
-  }
-
-
-  if (!/^[A-Z0-9]+$/i.test(s)) return false;
-  if (!/[A-Z]/i.test(s)) return false;
-  if (!/\d/.test(s)) return false;
-  return true;
-}
-
-function findHeaderRow(rows: unknown[][]): number {
-  let bestRow = 0, bestScore = 0;
-  for (let i = 0; i < Math.min(10, rows.length); i++) {
-    const score = rows[i].filter(v => typeof v === "string" && v.trim().length > 1).length;
-    if (score > bestScore) { bestScore = score; bestRow = i; }
-  }
-  return bestRow;
-}
-
-interface ColMap { phone: number | null; nmi: number | null; date: number | null; center: number | null }
-
-function detectColumns(headers: string[], sampleRows: unknown[][]): ColMap {
-  let phoneBest  = { idx: null as number | null, score: 0 };
-  let nmisBest   = { idx: null as number | null, score: 0 };
-  let dateBest   = { idx: null as number | null, score: 0 };
-  let centerBest = { idx: null as number | null, score: 0 };
-
-  for (let idx = 0; idx < headers.length; idx++) {
-    const h    = (headers[idx] || "").toLowerCase().trim();
-    const vals = sampleRows.map(r => r[idx]).filter(v => v != null).slice(0, 15);
-
-    const ph = PHONE_KEYWORDS.filter(kw => h.includes(kw)).length * 3 + vals.filter(looksLikePhone).length;
-    // NMI: exact keyword match scores highest (×5), value heuristic boosts
-    const nm = NMI_KEYWORDS.filter(kw => h.includes(kw)).length * 5 + vals.filter(looksLikeNmi).length;
-    const dt = DATE_KEYWORDS.filter(kw => h.includes(kw)).length  * 3 + vals.filter(looksLikeDate).length;
-    const ct = CENTER_KEYWORDS.filter(kw => h.includes(kw)).length * 4
-      + vals.filter(v => typeof v === "string" && v.length > 2 && v.length < 80 && !looksLikeDate(v) && !looksLikePhone(v) && !looksLikeNmi(v)).length;
-
-    if (ph > phoneBest.score)  phoneBest  = { idx, score: ph };
-    if (nm > nmisBest.score)   nmisBest   = { idx, score: nm };
-    if (dt > dateBest.score)   dateBest   = { idx, score: dt };
-    if (ct > centerBest.score) centerBest = { idx, score: ct };
-  }
-
-  return {
-    phone:  phoneBest.score  >= MIN_PHONE_SCORE  ? phoneBest.idx  : null,
-    nmi:    nmisBest.score   >= MIN_NMI_SCORE    ? nmisBest.idx   : null,
-    date:   dateBest.score   >= MIN_DATE_SCORE   ? dateBest.idx   : null,
-    center: centerBest.score >= MIN_CENTER_SCORE ? centerBest.idx : null,
+export interface SheetReport {
+  sheet: string;
+  skipped?: boolean;
+  reason?: string;
+  inserted?: number;
+  duplicates?: number;
+  skippedRows?: number;
+  detectedColumns?: {
+    phone: string | null;
+    nmi: string | null;
+    date: string | null;
+    center: string | null;
   };
 }
 
-export interface SheetReport {
-  sheet:       string;
-  skipped?:    boolean;
-  reason?:     string;
-  inserted?:   number;
-  duplicates?: number;
-  skippedRows?: number;
-  detectedColumns?: { phone: string | null; nmi: string | null; date: string | null; center: string | null };
+async function importDncSheet(ws: XLSX.WorkSheet): Promise<SheetReport> {
+  const { rowsRaw } = sheetToRowMatrices(ws);
+
+  if (rowsRaw.length < 2) {
+    return { sheet: DNC_SHEET_NAME, skipped: true, reason: "empty sheet" };
+  }
+
+  const headerIdx = findHeaderRow(rowsRaw);
+  const headers = (rowsRaw[headerIdx] as unknown[]).map((v) =>
+    typeof v === "string" ? v.trim() : String(v ?? ""),
+  );
+  const dataRaw = rowsRaw.slice(headerIdx + 1);
+  const cols = detectColumns(headers, dataRaw.slice(0, 20));
+  const phoneCol = cols.phone ?? findBestPhoneColumn(dataRaw);
+
+  if (phoneCol === null) {
+    return {
+      sheet: DNC_SHEET_NAME,
+      skipped: true,
+      reason: "no phone column detected",
+    };
+  }
+
+  const ops: object[] = [];
+  let skippedRows = 0;
+
+  for (const raw of dataRaw) {
+    const phone = normalizePhone(raw[phoneCol]);
+    if (!phone) {
+      skippedRows++;
+      continue;
+    }
+    ops.push({
+      updateOne: {
+        filter: { phone },
+        update: { $setOnInsert: { phone, imported_at: new Date() } },
+        upsert: true,
+      },
+    });
+  }
+
+  if (ops.length === 0) {
+    return { sheet: DNC_SHEET_NAME, inserted: 0, duplicates: 0, skippedRows };
+  }
+
+  const result = await Dnc.bulkWrite(
+    ops as Parameters<typeof Dnc.bulkWrite>[0],
+    { ordered: false },
+  );
+
+  return {
+    sheet: DNC_SHEET_NAME,
+    inserted: result.upsertedCount,
+    duplicates: result.matchedCount,
+    skippedRows,
+    detectedColumns: {
+      phone: headers[phoneCol] ?? null,
+      nmi: null,
+      date: null,
+      center: null,
+    },
+  };
 }
 
+/**
+ * Legacy single-request import (may timeout on Vercel for large files).
+ * Prefer client-side chunked import via /api/sales/import/chunk.
+ */
 export async function importExcelBuffer(buffer: ArrayBuffer): Promise<SheetReport[]> {
   await connectDb();
 
@@ -143,23 +110,29 @@ export async function importExcelBuffer(buffer: ArrayBuffer): Promise<SheetRepor
 
     const ws = wb.Sheets[sheetName];
 
-    // raw: false → formatted strings (useful for text dates)
-    const rowsFmt: unknown[][] = XLSX.utils.sheet_to_json(ws, { header: 1, defval: null, raw: false });
-    // raw: true  → Date objects + numbers (useful for excel serial dates)
-    const rowsRaw: unknown[][] = XLSX.utils.sheet_to_json(ws, { header: 1, defval: null, raw: true });
+    if (sheetName === DNC_SHEET_NAME) {
+      report.push(await importDncSheet(ws));
+      continue;
+    }
+
+    const { rowsRaw, rowsFmt } = sheetToRowMatrices(ws);
 
     if (rowsRaw.length < 2) continue;
 
     const headerIdx = findHeaderRow(rowsRaw);
-    const headers   = (rowsRaw[headerIdx] as unknown[]).map(v =>
-      typeof v === "string" ? v.trim() : String(v ?? "")
+    const headers = (rowsRaw[headerIdx] as unknown[]).map((v) =>
+      typeof v === "string" ? v.trim() : String(v ?? ""),
     );
     const dataRaw = rowsRaw.slice(headerIdx + 1);
     const dataFmt = rowsFmt.slice(headerIdx + 1);
-    const cols    = detectColumns(headers, dataRaw.slice(0, 20));
+    const cols = detectColumns(headers, dataRaw.slice(0, 20));
 
     if (cols.phone === null) {
-      report.push({ sheet: sheetName, skipped: true, reason: "no phone column detected" });
+      report.push({
+        sheet: sheetName,
+        skipped: true,
+        reason: "no phone column detected",
+      });
       continue;
     }
 
@@ -171,33 +144,50 @@ export async function importExcelBuffer(buffer: ArrayBuffer): Promise<SheetRepor
       const fmt = dataFmt[i];
 
       const phone = normalizePhone(raw[cols.phone!]);
-      if (!phone) { skippedRows++; continue; }
+      if (!phone) {
+        skippedRows++;
+        continue;
+      }
 
-      const nmi        = cols.nmi !== null ? normalizeNmi(raw[cols.nmi]) : null;
-      const saleDate   = parseDate(raw[cols.date ?? -1]) ?? parseDate(fmt[cols.date ?? -1]) ?? null;
-      const rawCenter  = cols.center !== null ? raw[cols.center] : null;
-      const centerName = typeof rawCenter === "string" ? rawCenter.trim() || null : null;
+      const nmi = cols.nmi !== null ? normalizeNmi(raw[cols.nmi]) : null;
+      const saleDate =
+        parseDate(raw[cols.date ?? -1]) ?? parseDate(fmt[cols.date ?? -1]) ?? null;
+      const rawCenter = cols.center !== null ? raw[cols.center] : null;
+      const centerName =
+        typeof rawCenter === "string" ? rawCenter.trim() || null : null;
 
       ops.push({
         updateOne: {
           filter: { phone, channel: sheetName, sale_date: saleDate },
-          update: { $setOnInsert: { phone, nmi, channel: sheetName, sale_date: saleDate, center_name: centerName, imported_at: new Date() } },
+          update: {
+            $setOnInsert: {
+              phone,
+              nmi,
+              channel: sheetName,
+              sale_date: saleDate,
+              center_name: centerName,
+              imported_at: new Date(),
+            },
+          },
           upsert: true,
         },
       });
     }
 
     if (ops.length > 0) {
-      const result = await Sale.bulkWrite(ops as Parameters<typeof Sale.bulkWrite>[0], { ordered: false });
+      const result = await Sale.bulkWrite(
+        ops as Parameters<typeof Sale.bulkWrite>[0],
+        { ordered: false },
+      );
       report.push({
-        sheet:       sheetName,
-        inserted:    result.upsertedCount,
-        duplicates:  result.matchedCount,
+        sheet: sheetName,
+        inserted: result.upsertedCount,
+        duplicates: result.matchedCount,
         skippedRows,
         detectedColumns: {
-          phone:  headers[cols.phone!] ?? null,
-          nmi:    cols.nmi    !== null ? (headers[cols.nmi]    ?? null) : null,
-          date:   cols.date   !== null ? (headers[cols.date]   ?? null) : null,
+          phone: headers[cols.phone!] ?? null,
+          nmi: cols.nmi !== null ? (headers[cols.nmi] ?? null) : null,
+          date: cols.date !== null ? (headers[cols.date] ?? null) : null,
           center: cols.center !== null ? (headers[cols.center] ?? null) : null,
         },
       });
@@ -210,19 +200,42 @@ export async function importExcelBuffer(buffer: ArrayBuffer): Promise<SheetRepor
 }
 
 export interface ChannelResult {
-  channel:  string;
-  count:    number;
-  records:  { phone: string; nmi: string | null; sale_date: Date | null; center_name: string | null }[];
+  channel: string;
+  count: number;
+  records: {
+    phone: string;
+    nmi: string | null;
+    sale_date: Date | null;
+    center_name: string | null;
+  }[];
 }
 
-const RECORD_PUSH = { phone: "$phone", nmi: "$nmi", sale_date: "$sale_date", center_name: "$center_name" };
+const RECORD_PUSH = {
+  phone: "$phone",
+  nmi: "$nmi",
+  sale_date: "$sale_date",
+  center_name: "$center_name",
+};
+
+export async function isPhoneInDnc(phone: string): Promise<boolean> {
+  await connectDb();
+  const normalized = normalizePhone(phone) ?? phone;
+  const doc = await Dnc.findOne({ phone: normalized }).select("_id").lean();
+  return !!doc;
+}
 
 export async function searchByPhone(phone: string): Promise<ChannelResult[]> {
   await connectDb();
   const normalized = normalizePhone(phone) ?? phone;
   return Sale.aggregate<ChannelResult>([
-    { $match: { phone: normalized } },
-    { $group: { _id: "$channel", count: { $sum: 1 }, records: { $push: RECORD_PUSH } } },
+    { $match: { phone: normalized, channel: { $ne: DNC_SHEET_NAME } } },
+    {
+      $group: {
+        _id: "$channel",
+        count: { $sum: 1 },
+        records: { $push: RECORD_PUSH },
+      },
+    },
     { $project: { _id: 0, channel: "$_id", count: 1, records: 1 } },
     { $sort: { channel: 1 } },
   ]);
@@ -233,7 +246,13 @@ export async function searchByNmi(nmi: string): Promise<ChannelResult[]> {
   const normalized = normalizeNmi(nmi) ?? nmi;
   return Sale.aggregate<ChannelResult>([
     { $match: { nmi: normalized } },
-    { $group: { _id: "$channel", count: { $sum: 1 }, records: { $push: RECORD_PUSH } } },
+    {
+      $group: {
+        _id: "$channel",
+        count: { $sum: 1 },
+        records: { $push: RECORD_PUSH },
+      },
+    },
     { $project: { _id: 0, channel: "$_id", count: 1, records: 1 } },
     { $sort: { channel: 1 } },
   ]);

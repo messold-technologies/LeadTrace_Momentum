@@ -1,22 +1,5 @@
 export type User = { id: string; email: string };
 
-export type Channel = { name: string; count: number };
-
-export type ChannelRecord = {
-  phone: string;
-  nmi: string | null;
-  sale_date: string | null;
-  center_name: string | null;
-};
-
-export type ChannelPage = {
-  channel: string;
-  total: number;
-  page: number;
-  totalPages: number;
-  records: ChannelRecord[];
-};
-
 export type SearchRecord = {
   phone: string;
   nmi: string | null;
@@ -35,6 +18,8 @@ export type SearchResult = {
   query: string;
   found: boolean;
   channels: SearchChannel[];
+  /** Set when searching by phone and the number exists on the DNC List */
+  inDnc?: boolean;
 };
 
 export type SheetReport = {

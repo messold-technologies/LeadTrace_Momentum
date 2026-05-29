@@ -1,4 +1,10 @@
-import { normalizePhone, normalizeNmi, searchByPhone, searchByNmi } from "@/lib/salesImporter";
+import {
+  normalizePhone,
+  normalizeNmi,
+  searchByPhone,
+  searchByNmi,
+  isPhoneInDnc,
+} from "@/lib/salesImporter";
 
 export const runtime = "nodejs";
 
@@ -14,8 +20,17 @@ export async function GET(request: Request) {
   if (rawPhone) {
     const phone = normalizePhone(rawPhone);
     if (!phone) return Response.json({ error: "Invalid phone number format." }, { status: 400 });
-    const channels = await searchByPhone(phone);
-    return Response.json({ type: "phone", query: phone, found: channels.length > 0, channels });
+    const [channels, inDnc] = await Promise.all([
+      searchByPhone(phone),
+      isPhoneInDnc(phone),
+    ]);
+    return Response.json({
+      type: "phone",
+      query: phone,
+      found: channels.length > 0 || inDnc,
+      channels,
+      inDnc,
+    });
   }
 
   const nmi = normalizeNmi(rawNmi);

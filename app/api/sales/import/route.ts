@@ -1,6 +1,8 @@
 import { importExcelBuffer } from "@/lib/salesImporter";
 
 export const runtime = "nodejs";
+/** Legacy whole-file import — large files should use chunked client import */
+export const maxDuration = 300;
 
 export async function POST(request: Request) {
   const contentType = request.headers.get("content-type") || "";
@@ -16,6 +18,17 @@ export async function POST(request: Request) {
   }
   if (!file.name.match(/\.(xlsx|xls)$/i)) {
     return Response.json({ error: "Only .xlsx / .xls files are accepted." }, { status: 400 });
+  }
+
+  // Files over ~2MB should use browser chunked import to avoid 504 timeouts
+  if (file.size > 2 * 1024 * 1024) {
+    return Response.json(
+      {
+        error:
+          "File is too large for single upload. The app will import it in smaller batches automatically — please refresh and try again.",
+      },
+      { status: 413 },
+    );
   }
 
   const buffer = await file.arrayBuffer();
